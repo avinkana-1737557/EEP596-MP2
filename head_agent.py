@@ -22,29 +22,61 @@ class Head_Agent:
         self.hybrid_agent = None
         self.small_talk = {}
 
+    def _fallback_smalltalk_cache(self):
+        return {
+            "hi": "Hi! How can I help with machine learning today?",
+            "hello": "Hello! How can I help with machine learning today?",
+            "hey": "Hey! How can I help with machine learning today?",
+            "good morning": "Good morning! How can I help with machine learning today?",
+            "good afternoon": "Good afternoon! How can I help with machine learning today?",
+            "good evening": "Good evening! How can I help with machine learning today?",
+            "how are you": "I'm doing well, thanks! How can I help with machine learning today?",
+            "whats up": "Not much—ready to help with machine learning questions.",
+            "what's up": "Not much—ready to help with machine learning questions.",
+            "who are you": "I'm a machine learning chatbot built to answer questions from the course material.",
+            "thank you": "You're welcome!",
+            "thanks": "You're welcome!",
+            "bye": "Bye!",
+            "goodbye": "Goodbye!",
+            "see you": "See you later!",
+        }
+
     def generate_smalltalk_cache(self):
         prompt = """
-        Generate a JSON dictionary of more than 500 common greetings (e.g. hello, hi, hey, good morning, etc.) and
-        small-talk phrases (e.g. how are you, what's up, who are you, thank you, bye, etc.) mapped to short, friendly responses.
-        Use local and colloqual terms (e.g howdy) as appropriate.
-        Create it as a single flat list with the greeting/small talk as the key and the response as value.
-        Keep responses short and friendly.
+        Generate a JSON dictionary of common greetings and small-talk phrases mapped to short, friendly responses.
+        Keep the dictionary under 100 entries.
         Return ONLY valid JSON.
         """
 
-        resp = self.client.chat.completions.create(
-            model="gpt-4.1-nano",
-            messages=[{"role": "user", "content": prompt}],
-        )
-
         try:
-            smalltalk_dict = json.loads(resp.choices[0].message.content)
-        except Exception:
-            cleaned = resp.choices[0].message.content.strip()
-            cleaned = cleaned[cleaned.find("{") : cleaned.rfind("}") + 1]
-            smalltalk_dict = json.loads(cleaned)
+            resp = self.client.chat.completions.create(
+                model="gpt-4.1-nano",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = (resp.choices[0].message.content or "").strip()
+            if not content:
+                return self._fallback_smalltalk_cache()
 
-        return {k.lower(): v for k, v in smalltalk_dict.items()}
+            try:
+                smalltalk_dict = json.loads(content)
+            except Exception:
+                start = content.find("{")
+                end = content.rfind("}")
+                if start == -1 or end == -1 or end <= start:
+                    return self._fallback_smalltalk_cache()
+                smalltalk_dict = json.loads(content[start:end + 1])
+
+            if not isinstance(smalltalk_dict, dict) or not smalltalk_dict:
+                return self._fallback_smalltalk_cache()
+
+            normalized = {}
+            for k, v in smalltalk_dict.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    normalized[k.lower().strip()] = v.strip()
+
+            return normalized or self._fallback_smalltalk_cache()
+        except Exception:
+            return self._fallback_smalltalk_cache()
 
     def setup_sub_agents(self):
         self.client = OpenAI(api_key=self.openai_key)
@@ -77,33 +109,40 @@ class Head_Agent:
         self.hybrid_agent = Hybrid_Filter_Agent(self.client)
 
     def check_smalltalk(self, text: str):
-        text_clean = (text or "").lower().strip().rstrip("!?.,:;")
+        text = text.lower().strip()
+        text_clean = text.rstrip("!?.,:;")
         return self.small_talk.get(text_clean)
 
     def main_loop(self, user_query, conversation_history, return_debug: bool = False):
         debug = {"user_query": user_query}
 
         cached = self.check_smalltalk(user_query)
-        debug["smalltalk_tagged"] = bool(cached)
-        debug["smalltalk_response_found"] = bool(cached)
+        debug["smalltalk_tagged"] = True if cached else False
+        debug["smalltalk_response_found"] = True if cached else False
         if cached:
             debug["final_answer"] = cached
-            return (cached, debug) if return_debug else cached
+            if return_debug:
+                return cached, debug
+            return cached
 
         llm_smalltalk = self.smalltalk_agent.run(user_query)
         if llm_smalltalk:
-            debug["smalltalk_tagged"] = True
-            debug["smalltalk_response_found"] = True
-            debug["smalltalk_source"] = "llm_agent"
-            debug["final_answer"] = llm_smalltalk
-            return (llm_smalltalk, debug) if return_debug else llm_smalltalk
+            if return_debug:
+                debug["smalltalk_tagged"] = True
+                debug["smalltalk_response_found"] = True
+                debug["smalltalk_source"] = "llm_agent"
+                debug["final_answer"] = llm_smalltalk
+                return llm_smalltalk, debug
+            return llm_smalltalk
 
         is_obnoxious = self.obnoxious_agent.check_query(user_query)
         debug["obnoxious_tagged"] = bool(is_obnoxious)
         if is_obnoxious:
             resp = "Your message contains inappropriate or obnoxious content."
             debug["final_answer"] = resp
-            return (resp, debug) if return_debug else resp
+            if return_debug:
+                return resp, debug
+            return resp
 
         rewritten_query = self.context_agent.rephrase(
             user_history=conversation_history,
@@ -115,24 +154,25 @@ class Head_Agent:
         if hyb.get("relevant_query", "").strip() == "":
             resp = "This query is not relevant to the document"
             debug["final_answer"] = resp
-            return (resp, debug) if return_debug else resp
+            if return_debug:
+                return resp, debug
+            return resp
 
         filtered_query = hyb["relevant_query"].strip()
-        debug["filtered_query"] = filtered_query
 
         pinecone_docs = self.query_agent.run(filtered_query)
         debug["retrieved_docs_count"] = len(pinecone_docs) if pinecone_docs else 0
 
-        # Deployment/debug-safe behavior:
-        # use retrieved docs directly instead of letting the relevance gate throw out good matches.
         docs_to_use = pinecone_docs
-        debug["relevance_any_relevant"] = bool(docs_to_use)
+        debug["relevance_any_relevant"] = True if docs_to_use else False
         debug["relevant_docs_count"] = len(docs_to_use) if docs_to_use else 0
 
         if not docs_to_use:
             resp = "This query is not relevant to the document"
             debug["final_answer"] = resp
-            return (resp, debug) if return_debug else resp
+            if return_debug:
+                return resp, debug
+            return resp
 
         final_answer = self.answer_agent.generate_response(
             query=filtered_query,
@@ -141,4 +181,6 @@ class Head_Agent:
         )
         debug["final_answer"] = final_answer
 
-        return (final_answer, debug) if return_debug else final_answer
+        if return_debug:
+            return final_answer, debug
+        return final_answer
