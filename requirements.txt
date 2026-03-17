@@ -1,6 +1,6 @@
 streamlit
 openai
-pinecone
+pinecone>=5.4,<6
 langchain-openai
-langchain-pinecone
+langchain-pinecone==0.2.13
 textblob
