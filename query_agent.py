@@ -1,5 +1,4 @@
 from openai import OpenAI
-from pinecone import Pinecone
 from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 

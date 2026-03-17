@@ -1,6 +1,6 @@
-streamlit==1.55.0
-openai>=1.30.0
-pinecone>=7.0.0
-langchain-openai>=0.3.0
-langchain-pinecone>=0.2.0
-textblob>=0.18.0
+streamlit
+openai
+pinecone
+langchain-openai
+langchain-pinecone
+textblob
